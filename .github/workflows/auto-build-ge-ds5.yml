@@ -1,0 +1,122 @@
+name: Auto Build GE-Proton (DS5 Haptic)
+
+on:
+  schedule:
+    - cron: '0 2 * * *'
+  workflow_dispatch:
+
+jobs:
+  check-release:
+    name: Check Upstream Version
+    runs-on: ubuntu-latest
+    outputs:
+      latest_tag: ${{ steps.get_upstream.outputs.tag }}
+      should_build: ${{ steps.check_local.outputs.build }}
+    steps:
+      - name: Fetch Latest Upstream Tag
+        id: get_upstream
+        run: |
+          LATEST_TAG=$(curl -s https://api.github.com/repos/GloriousEggroll/proton-ge-custom/releases/latest | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
+          echo "tag=$LATEST_TAG" >> $GITHUB_OUTPUT
+          echo "Upstream latest tag is $LATEST_TAG"
+
+      - name: Check Local Release Status
+        id: check_local
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if gh release view "${{ steps.get_upstream.outputs.tag }}-ds5" --repo "${{ github.repository }}" &>/dev/null
+          then
+            echo "build=false" >> $GITHUB_OUTPUT
+            echo "Release already exists. Skipping build."
+          else
+            echo "build=true" >> $GITHUB_OUTPUT
+            echo "New release detected. Proceeding to build."
+          fi
+
+  build-and-publish:
+    name: Build & Publish Release
+    needs: check-release
+    if: needs.check-release.outputs.should_build == 'true' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Cleanup disk space
+        uses: endersonmenezes/free-disk-space@v3
+        with:
+          remove_android: true
+          remove_dotnet: true
+          remove_haskell: true
+          remove_tool_cache: true
+          remove_codeql: true
+          remove_docker_images: true
+          remove_swap: true
+          remove_packages: |
+            azure-cli google-cloud-cli google-chrome-stable firefox microsoft-edge-stable postgresql* mysql* php* temurin-* *llvm* clang* mono-devel powershell dotnet-sdk-*
+          remove_folders: |
+            /usr/share/swift /usr/share/miniconda /usr/local/lib/node_modules /usr/local/share/chromium /usr/local/share/powershell /usr/local/julia* /usr/local/aws-cli /usr/local/aws-sam-cli /usr/share/gradle /usr/share/az* /usr/local/.ghcup
+
+      - name: Prepare host
+        run: |
+          sudo apt update
+          sudo apt-get install -y ccache fontforge-nox
+
+      - name: Checkout Local Repository (Patches)
+        uses: actions/checkout@v4
+        with:
+          path: 'my-repo'
+
+      - name: Checkout Upstream GE-Proton
+        uses: actions/checkout@v4
+        with:
+          repository: 'GloriousEggroll/proton-ge-custom'
+          ref: ${{ needs.check-release.outputs.latest_tag }}
+          fetch-depth: 0
+          fetch-tags: true
+          submodules: false
+          path: 'proton-src'
+
+      - name: Inject DS5 Patches
+        run: |
+          cp my-repo/ds5-patches/*.patch proton-src/patches/
+          cat << 'EOF' > patch_list.txt
+          patch -Np1 < "$patchdir/0001-mmdevapi-setupapi-HACK-Set-MMDevices-properties.patch"
+          patch -Np1 < "$patchdir/0002-setupapi-Set-DeviceContainers-registry-values.patch"
+          patch -Np1 < "$patchdir/0003-mmdevapi-Force-allocation-of-the-Shared-audio-stream.patch"
+          patch -Np1 < "$patchdir/0004-xaudio2-Force-spatial-audio-for-all-endpoint-devices.patch"
+          patch -Np1 < "$patchdir/0005-winepulse.drv-Report-2-channels-for-surround-4.0-pro.patch"
+          patch -Np1 < "$patchdir/0006-mmdevapi-Add-PROTON_MMDEV_FAKE_EXCLUSIVE-envvar-for-.patch"
+          patch -Np1 < "$patchdir/0007-winepulse.drv-Support-DualSense-Audio.patch"
+          patch -Np1 < "$patchdir/0008-winepulse.drv-Fix-the-volume-limits-for-ext-stream-1.patch"
+          patch -Np1 < "$patchdir/0009-winepulse.drv-Fix-the-volume-limits-for-ext-stream-2.patch"
+          patch -Np1 < "$patchdir/0010-winealsa.drv-HACK-Support-DualSense-Haptic-Feedback.patch"
+          patch -Np1 < "$patchdir/0011-winealsa.drv-Fix-the-volume-limits-for-ext-stream-2.patch"
+          EOF
+          sed -i '/#WINE CUSTOM PATCHES/r patch_list.txt' proton-src/patches/protonprep-valve-staging.sh
+
+      - name: Patch & Prepare Submodules
+        working-directory: ./proton-src
+        run: |
+          git submodule update --init --filter=tree:0 --recursive
+          ./patches/protonprep-valve-staging.sh || true
+          patch -Np1 -i ./.github/patches/0001-build-strip-binaries-early.patch
+          mkdir ./build
+
+      - name: Configure Build
+        working-directory: ./proton-src/build
+        run: |
+          ../configure.sh --build-name=${{ needs.check-release.outputs.latest_tag }}-ds5 --container-engine=docker
+
+      - name: Make Redist
+        working-directory: ./proton-src/build
+        run: |
+          make -j$(nproc) redist
+
+      - name: Publish to GitHub Releases
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${{ needs.check-release.outputs.latest_tag }}-ds5" \
+            ./proton-src/build/${{ needs.check-release.outputs.latest_tag }}-ds5.tar.gz \
+            --title "${{ needs.check-release.outputs.latest_tag }} DS5 Patch" \
+            --notes "Automated build of GE-Proton (${{ needs.check-release.outputs.latest_tag }}) with DS5 haptic patches." \
+            --repo "${{ github.repository }}"
