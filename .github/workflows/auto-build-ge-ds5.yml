@@ -96,7 +96,18 @@ jobs:
       - name: Patch & Prepare Submodules
         working-directory: ./proton-src
         run: |
-          git submodule update --init --filter=tree:0 --recursive
+          for attempt in {1..10}
+          do
+            if git submodule update --init --filter=tree:0 --recursive
+            then
+              break
+            fi
+            if [ $attempt -lt 10 ]
+            then
+              echo "Submodule update failed, retrying in $((attempt * 10)) seconds..."
+              sleep $((attempt * 10))
+            fi
+          done
           ./patches/protonprep-valve-staging.sh || true
           patch -Np1 -i ./.github/patches/0001-build-strip-binaries-early.patch
           mkdir ./build
