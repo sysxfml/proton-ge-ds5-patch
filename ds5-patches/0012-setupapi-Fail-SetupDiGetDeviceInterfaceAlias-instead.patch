@@ -1,0 +1,77 @@
+From 73bb38d009e85b34a82350d53f64de221892a4d8 Mon Sep 17 00:00:00 2001
+From: Fabian Wosar <fwosar@users.noreply.github.com>
+Date: Thu, 30 Jul 2026 12:55:32 +0100
+Subject: [PATCH 12/12] setupapi: Fail SetupDiGetDeviceInterfaceAlias instead
+ of aborting the process.
+
+As an unimplemented stub this raised a noncontinuable exception, which kills
+the caller. PortAudio's WDM/KS backend calls it for every KSCATEGORY_AUDIO
+interface it enumerates, to work out whether a device plays back or records,
+so a game using PortAudio died on startup rather than falling back to one of
+its other backends. Reproduced with Black Desert Online.
+
+Report that no alias exists, which is what Windows returns for a device that
+has no alias, and is accurate here since nothing registers the KS render and
+capture interfaces. PortAudio then counts zero usable WDM/KS filters and
+carries on with WASAPI or WMME.
+
+Implementing the lookup for real would not help: the device paths behind
+these interfaces have no kernel streaming filter, so PortAudio would fail
+later when it opens one and probes its pins. This matches how the equivalent
+CM_Get_Device_Interface_AliasW is already handled.
+---
+ dlls/setupapi/devinst.c     | 24 ++++++++++++++++++++++++
+ dlls/setupapi/setupapi.spec |  2 +-
+ 2 files changed, 25 insertions(+), 1 deletion(-)
+
+diff --git a/dlls/setupapi/devinst.c b/dlls/setupapi/devinst.c
+index 0806ad326c1..a6532eba42d 100644
+--- a/dlls/setupapi/devinst.c
++++ b/dlls/setupapi/devinst.c
+@@ -3190,6 +3190,30 @@ BOOL WINAPI SetupDiEnumDeviceInterfaces(HDEVINFO devinfo,
+     return FALSE;
+ }
+ 
++/***********************************************************************
++ *		SetupDiGetDeviceInterfaceAlias (SETUPAPI.@)
++ *
++ * Two device interfaces are aliases of each other when the same device instance
++ * exposes them under the same reference string, but in different interface
++ * classes. Nothing registers such aliases here, so report that none exists,
++ * which is what Windows does for a device that has no alias.
++ *
++ * Reporting it this way matters: as an unimplemented stub this raises a
++ * noncontinuable exception and takes the process down. PortAudio's WDM/KS
++ * backend calls this for every KSCATEGORY_AUDIO interface it finds in order to
++ * tell playback and capture devices apart, so a game using PortAudio aborted on
++ * startup instead of falling back to one of its other backends.
++ */
++BOOL WINAPI SetupDiGetDeviceInterfaceAlias(HDEVINFO devinfo, SP_DEVICE_INTERFACE_DATA *iface_data,
++        const GUID *alias_class, SP_DEVICE_INTERFACE_DATA *alias_data)
++{
++    FIXME("devinfo %p, iface_data %p, alias_class %s, alias_data %p: stub\n",
++            devinfo, iface_data, debugstr_guid(alias_class), alias_data);
++
++    SetLastError(ERROR_NO_SUCH_DEVICE_INTERFACE);
++    return FALSE;
++}
++
+ /***********************************************************************
+  *		SetupDiDestroyDeviceInfoList (SETUPAPI.@)
+   *
+diff --git a/dlls/setupapi/setupapi.spec b/dlls/setupapi/setupapi.spec
+index 9ac1c6c9831..3f89c5098f8 100644
+--- a/dlls/setupapi/setupapi.spec
++++ b/dlls/setupapi/setupapi.spec
+@@ -354,7 +354,7 @@
+ @ stdcall SetupDiGetDeviceInstallParamsW(ptr ptr ptr)
+ @ stdcall SetupDiGetDeviceInstanceIdA(ptr ptr ptr long ptr)
+ @ stdcall SetupDiGetDeviceInstanceIdW(ptr ptr ptr long ptr)
+-@ stub SetupDiGetDeviceInterfaceAlias
++@ stdcall SetupDiGetDeviceInterfaceAlias(ptr ptr ptr ptr)
+ @ stdcall SetupDiGetDeviceInterfaceDetailA(long ptr ptr long ptr ptr)
+ @ stdcall SetupDiGetDeviceInterfaceDetailW(long ptr ptr long ptr ptr)
+ @ stdcall SetupDiGetDeviceInterfacePropertyKeys(ptr ptr ptr long ptr long)
+-- 
+2.55.0
+
