@@ -158,6 +158,16 @@ jobs:
           done
           ./patches/protonprep-valve-staging.sh
           patch -Np1 -i ./.github/patches/0001-build-strip-binaries-early.patch
+          
+          echo "Fixing pulse.c 11.2 hybrid compilation conflicts..."
+          for f in $(find . -path "*/dlls/winepulse.drv/pulse.c")
+          do
+            echo "Patching orphaned 11.2 logic in $f"
+            sed -i '1i #define pulse_stream_ready(s) pulse_stream_valid(s)' "$f"
+            sed -i '1i #define pulse_stream_haptic(s) (0)' "$f"
+            sed -i 's/static int pulse_cond_timedwait_ms/static __attribute__((unused)) int pulse_cond_timedwait_ms/' "$f"
+          done
+          
           mkdir ./build
 
       - name: Configure Build
