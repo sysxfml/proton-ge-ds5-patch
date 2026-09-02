@@ -155,8 +155,8 @@ jobs:
           patch -Np1 < "$PATCH_DIR/0007-winepulse.drv-Support-DualSense-Audio.patch"
           patch -Np1 < "$PATCH_DIR/0008-winepulse.drv-Fix-the-volume-limits-for-ext-stream-1.patch"
           patch -Np1 < "$PATCH_DIR/0009-winepulse.drv-Fix-the-volume-limits-for-ext-stream-2.patch"
-          patch -Np1 < "$PATCH_DIR/0010-winealsa.drv-HACK-Support-DualSense-Haptic-Feedback.patch"
           patch -Np1 < "$PATCH_DIR/0011-winealsa.drv-Fix-the-volume-limits-for-ext-stream-2.patch"
+          patch -Np1 < "$PATCH_DIR/0012-setupapi-Fail-SetupDiGetDeviceInterfaceAlias-instead.patch"
           EOF
           sed -i '/#WINE CUSTOM PATCHES/r patch_list.txt' proton-src/patches/protonprep-valve-staging.sh
 
@@ -197,6 +197,8 @@ jobs:
           NEW_TAG="${{ needs.check-release.outputs.latest_tag }}-ds5"
           ASSET="./proton-src/build/${NEW_TAG}.tar.gz"
 
+          # Create the new release first. Old releases are only deleted after
+          # the new package has been uploaded successfully.
           gh release create "$NEW_TAG" \
             "$ASSET" \
             --title "${{ needs.check-release.outputs.latest_tag }} DS5 Patch" \
