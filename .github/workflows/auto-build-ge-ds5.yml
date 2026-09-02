@@ -1,5 +1,9 @@
 name: Auto Build GE-Proton (DS5 Haptic)
 
+concurrency:
+  group: auto-build-ge-ds5
+  cancel-in-progress: false
+
 on:
   schedule:
     - cron: '0 2 * * *'
@@ -25,19 +29,32 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          if gh release view "${{ steps.get_upstream.outputs.tag }}-ds5" --repo "${{ github.repository }}" &>/dev/null
-          then
-            echo "build=false" >> $GITHUB_OUTPUT
-            echo "Release already exists. Skipping build."
+          set -euo pipefail
+          LATEST_TAG="${{ steps.get_upstream.outputs.tag }}"
+          TARGET_TAG="${LATEST_TAG}-ds5"
+          CURRENT_TAG=$(gh release list --repo "${{ github.repository }}" --limit 100 --json tagName --jq '.[] | select(.tagName | endswith("-ds5")) | .tagName' | sort -V | tail -n 1 || true)
+
+          echo "Current generated release: ${CURRENT_TAG:-<none>}"
+          echo "Latest upstream release: $LATEST_TAG"
+
+          if [ -z "$CURRENT_TAG" ]; then
+            echo "build=true" >> "$GITHUB_OUTPUT"
+            echo "No DS5 release exists. Proceeding to build."
+          elif [ "$CURRENT_TAG" = "$TARGET_TAG" ]; then
+            echo "build=false" >> "$GITHUB_OUTPUT"
+            echo "Generated release is already up to date. Skipping build."
+          elif [ "$(printf '%s\n%s\n' "$CURRENT_TAG" "$TARGET_TAG" | sort -V | tail -n 1)" = "$CURRENT_TAG" ]; then
+            echo "build=false" >> "$GITHUB_OUTPUT"
+            echo "Local DS5 release is newer than or equal to upstream. Skipping build."
           else
-            echo "build=true" >> $GITHUB_OUTPUT
-            echo "New release detected. Proceeding to build."
+            echo "build=true" >> "$GITHUB_OUTPUT"
+            echo "A newer upstream release was detected. Proceeding to build."
           fi
 
   build-and-publish:
     name: Build & Publish Release
     needs: check-release
-    if: needs.check-release.outputs.should_build == 'true' || github.event_name == 'workflow_dispatch'
+    if: needs.check-release.outputs.should_build == 'true'
     runs-on: ubuntu-latest
     steps:
       - name: Cleanup disk space
@@ -75,21 +92,71 @@ jobs:
           submodules: false
           path: 'proton-src'
 
+      - name: Restore DS5 controller stack to GE-Proton 11.1 baseline
+        working-directory: ./proton-src
+        env:
+          BASE_TAG: GE-Proton11-1
+          TARGET_TAG: ${{ needs.check-release.outputs.latest_tag }}
+        run: |
+          set -euo pipefail
+
+          echo "Comparing DS5 patch tree: ${BASE_TAG} -> ${TARGET_TAG}"
+          git diff --name-status "${BASE_TAG}..${TARGET_TAG}" -- patches/proton-ds5-haptic || true
+
+          # GE-Proton 11.1 had no official proton-ds5-haptic patch series.
+          # Remove the newer upstream DS5 implementation from the checked-out
+          # release, then apply the xzn patches from our own repository below.
+          if git ls-tree -d --name-only "${BASE_TAG}" -- patches/proton-ds5-haptic | grep -q '^patches/proton-ds5-haptic$'; then
+            echo "${BASE_TAG} contains proton-ds5-haptic; not removing it."
+          else
+            echo "${BASE_TAG} has no proton-ds5-haptic directory; removing newer upstream DS5 patches."
+            rm -rf patches/proton-ds5-haptic
+          fi
+
+          # The current GE prep script normally applies the official DS5 patch
+          # directory. Remove only that block; leave every other GE patch intact.
+          python3 - <<'PY'
+          from pathlib import Path
+
+          p = Path("patches/protonprep-valve-staging.sh")
+          s = p.read_text(encoding="utf-8")
+          start_markers = (
+              "# https://github.com/xzn/proton-ds5-haptic",
+              'echo "WINE: -HOTFIX- Add proton DS5 patches"',
+          )
+          end_marker = 'echo "WINE: RUN AUTOCONF TOOLS/MAKE_REQUESTS"'
+
+          starts = [s.find(m) for m in start_markers if s.find(m) != -1]
+          start = min(starts) if starts else -1
+          if start != -1:
+              end = s.find(end_marker, start)
+              if end == -1:
+                  raise SystemExit("Found upstream DS5 block start but not its end marker.")
+              replacement = 'echo "WINE: DS5 legacy mode - skipping upstream proton-ds5-haptic patches"\n\n'
+              p.write_text(s[:start] + replacement + s[end:], encoding="utf-8")
+              print("Removed upstream proton-ds5-haptic application block.")
+          else:
+              print("No upstream proton-ds5-haptic application block found; nothing to remove.")
+          PY
+
+          echo "Legacy DS5 controller preparation complete."
+
       - name: Inject DS5 Patches
         run: |
           cp my-repo/ds5-patches/*.patch proton-src/patches/
-          cat << 'EOF' > patch_list.txt
-          patch -Np1 < "$patchdir/0001-mmdevapi-setupapi-HACK-Set-MMDevices-properties.patch"
-          patch -Np1 < "$patchdir/0002-setupapi-Set-DeviceContainers-registry-values.patch"
-          patch -Np1 < "$patchdir/0003-mmdevapi-Force-allocation-of-the-Shared-audio-stream.patch"
-          patch -Np1 < "$patchdir/0004-xaudio2-Force-spatial-audio-for-all-endpoint-devices.patch"
-          patch -Np1 < "$patchdir/0005-winepulse.drv-Report-2-channels-for-surround-4.0-pro.patch"
-          patch -Np1 < "$patchdir/0006-mmdevapi-Add-PROTON_MMDEV_FAKE_EXCLUSIVE-envvar-for-.patch"
-          patch -Np1 < "$patchdir/0007-winepulse.drv-Support-DualSense-Audio.patch"
-          patch -Np1 < "$patchdir/0008-winepulse.drv-Fix-the-volume-limits-for-ext-stream-1.patch"
-          patch -Np1 < "$patchdir/0009-winepulse.drv-Fix-the-volume-limits-for-ext-stream-2.patch"
-          patch -Np1 < "$patchdir/0010-winealsa.drv-HACK-Support-DualSense-Haptic-Feedback.patch"
-          patch -Np1 < "$patchdir/0011-winealsa.drv-Fix-the-volume-limits-for-ext-stream-2.patch"
+          PATCH_DIR="$GITHUB_WORKSPACE/my-repo/ds5-patches"
+          cat << EOF > patch_list.txt
+          patch -Np1 < "$PATCH_DIR/0001-mmdevapi-setupapi-HACK-Set-MMDevices-properties.patch"
+          patch -Np1 < "$PATCH_DIR/0002-setupapi-Set-DeviceContainers-registry-values.patch"
+          patch -Np1 < "$PATCH_DIR/0003-mmdevapi-Force-allocation-of-the-Shared-audio-stream.patch"
+          patch -Np1 < "$PATCH_DIR/0004-xaudio2-Force-spatial-audio-for-all-endpoint-devices.patch"
+          patch -Np1 < "$PATCH_DIR/0005-winepulse.drv-Report-2-channels-for-surround-4.0-pro.patch"
+          patch -Np1 < "$PATCH_DIR/0006-mmdevapi-Add-PROTON_MMDEV_FAKE_EXCLUSIVE-envvar-for-.patch"
+          patch -Np1 < "$PATCH_DIR/0007-winepulse.drv-Support-DualSense-Audio.patch"
+          patch -Np1 < "$PATCH_DIR/0008-winepulse.drv-Fix-the-volume-limits-for-ext-stream-1.patch"
+          patch -Np1 < "$PATCH_DIR/0009-winepulse.drv-Fix-the-volume-limits-for-ext-stream-2.patch"
+          patch -Np1 < "$PATCH_DIR/0010-winealsa.drv-HACK-Support-DualSense-Haptic-Feedback.patch"
+          patch -Np1 < "$PATCH_DIR/0011-winealsa.drv-Fix-the-volume-limits-for-ext-stream-2.patch"
           EOF
           sed -i '/#WINE CUSTOM PATCHES/r patch_list.txt' proton-src/patches/protonprep-valve-staging.sh
 
@@ -108,7 +175,7 @@ jobs:
               sleep $((attempt * 10))
             fi
           done
-          ./patches/protonprep-valve-staging.sh || true
+          ./patches/protonprep-valve-staging.sh
           patch -Np1 -i ./.github/patches/0001-build-strip-binaries-early.patch
           mkdir ./build
 
@@ -126,8 +193,25 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release create "${{ needs.check-release.outputs.latest_tag }}-ds5" \
-            ./proton-src/build/${{ needs.check-release.outputs.latest_tag }}-ds5.tar.gz \
+          set -euo pipefail
+          NEW_TAG="${{ needs.check-release.outputs.latest_tag }}-ds5"
+          ASSET="./proton-src/build/${NEW_TAG}.tar.gz"
+
+          # Create the new release first. Old releases are only deleted after
+          # the new package has been uploaded successfully.
+          gh release create "$NEW_TAG" \
+            "$ASSET" \
             --title "${{ needs.check-release.outputs.latest_tag }} DS5 Patch" \
-            --notes "Automated build of GE-Proton (${{ needs.check-release.outputs.latest_tag }}) with DS5 haptic patches." \
+            --notes "Automated build of GE-Proton (${{ needs.check-release.outputs.latest_tag }}) using the GE-Proton 11.1 DS controller baseline plus xzn DualSense haptic patches." \
             --repo "${{ github.repository }}"
+
+          echo "New release created successfully. Removing older DS5 releases..."
+          OLD_TAGS=$(gh release list --repo "${{ github.repository }}" --limit 100 --json tagName --jq '.[] | select(.tagName | endswith("-ds5")) | .tagName' | grep -v "^${NEW_TAG}$" || true)
+
+          while IFS= read -r OLD_TAG; do
+            [ -n "$OLD_TAG" ] || continue
+            echo "Deleting old release: $OLD_TAG"
+            gh release delete "$OLD_TAG" --yes --cleanup-tag --repo "${{ github.repository }}"
+          done <<< "$OLD_TAGS"
+
+          echo "Release cleanup complete. Kept: $NEW_TAG"
