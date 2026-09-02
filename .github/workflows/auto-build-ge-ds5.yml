@@ -197,21 +197,11 @@ jobs:
           NEW_TAG="${{ needs.check-release.outputs.latest_tag }}-ds5"
           ASSET="./proton-src/build/${NEW_TAG}.tar.gz"
 
-          # Create the new release first. Old releases are only deleted after
-          # the new package has been uploaded successfully.
           gh release create "$NEW_TAG" \
             "$ASSET" \
             --title "${{ needs.check-release.outputs.latest_tag }} DS5 Patch" \
             --notes "Automated build of GE-Proton (${{ needs.check-release.outputs.latest_tag }}) using the GE-Proton 11.1 DS controller baseline plus xzn DualSense haptic patches." \
             --repo "${{ github.repository }}"
 
-          echo "New release created successfully. Removing older DS5 releases..."
-          OLD_TAGS=$(gh release list --repo "${{ github.repository }}" --limit 100 --json tagName --jq '.[] | select(.tagName | endswith("-ds5")) | .tagName' | grep -v "^${NEW_TAG}$" || true)
-
-          while IFS= read -r OLD_TAG; do
-            [ -n "$OLD_TAG" ] || continue
-            echo "Deleting old release: $OLD_TAG"
-            gh release delete "$OLD_TAG" --yes --cleanup-tag --repo "${{ github.repository }}"
-          done <<< "$OLD_TAGS"
-
-          echo "Release cleanup complete. Kept: $NEW_TAG"
+          echo "New release created successfully: $NEW_TAG"
+          echo "Older DS5 releases are preserved."
