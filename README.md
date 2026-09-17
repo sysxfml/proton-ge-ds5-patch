@@ -1,5 +1,3 @@
-# sysxfml/proton-ge-ds5-patch
-
 ### Description
 This repository provides an automated CI/CD pipeline using GitHub Actions to track upstream GE-Proton releases, inject DualSense (DS5) native haptic feedback and adaptive trigger patches, and publish the compiled custom builds. 
 
