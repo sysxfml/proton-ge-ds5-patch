@@ -14,7 +14,7 @@ This is an unofficial, community-driven project. All credits for the core softwa
 
 **⚠️ IMPORTANT DISCLAIMER:** 
 *   **Personal Use Only:** This custom build and its invasive patches are strictly for **personal use**. Anyone else choosing to use this build does so entirely at their own risk.
-*   **Limited Testing:** This compiled version has **ONLY** been tested and verified to work with the game ***Arknights: Endfield* (明日方舟：终末地)**. There is absolutely no guarantee that it will function correctly with any other games. 
+*   **Limited Testing:** This compiled version has **ONLY** been tested and verified to work with the game ***Arknights: Endfield* (明日方舟：终末地)** non-steam version. There is absolutely no guarantee that it will function correctly with any other games. 
 *   **No Official Support:** **DO NOT** report any bugs, crashes, or issues encountered while using this build to the official Valve Proton bug tracker or the upstream GE-Proton issue tracker. Upstream developers are not responsible for supporting this modified version.
 
 ### How to Use
